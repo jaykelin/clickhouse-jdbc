@@ -1,7 +1,5 @@
 package ru.yandex.clickhouse.response;
 
-import ru.yandex.clickhouse.util.guava.StreamUtils;
-
 import java.io.IOException;
 import java.io.InputStream;
 
@@ -21,9 +19,6 @@ public class StreamSplitter {
     private int posRead;
     // position until which the values from buf already passed out through next()
     private int posNext;
-
-    private int markedRead;
-    private int markedNext;
 
     private boolean readOnce;
 
@@ -123,28 +118,4 @@ public class StreamSplitter {
     public void close() throws IOException {
         delegate.close();
     }
-
-    @Override
-    public String toString() {
-        String bufStr = new String(buf, StreamUtils.UTF_8).trim();
-
-        return "StreamSplitter{" +
-            "delegate=" + delegate +
-            ", sep=" + sep +
-            ", buf=" + bufStr +
-            ", posRead=" + posRead +
-            ", posNext=" + posNext +
-            ", readOnce=" + readOnce +
-            '}';
-    }
-
-  public void mark() {
-        markedRead = posRead;
-        markedNext = posNext;
-  }
-
-  public void reset() {
-        posRead = markedRead;
-        posNext = markedNext;
-  }
 }

@@ -20,7 +20,7 @@ public class BatchInserts {
         connection.createStatement().execute("CREATE DATABASE IF NOT EXISTS test");
     }
 
-    @Test
+    @Test(enabled = false)
     public void batchInsert() throws Exception {
 
         connection.createStatement().execute("DROP TABLE IF EXISTS test.batch_insert");
@@ -49,7 +49,7 @@ public class BatchInserts {
 
     }
 
-    @Test
+    @Test(enabled = false)
     public void batchInsert2() throws Exception {
         connection.createStatement().execute("DROP TABLE IF EXISTS test.batch_insert2");
         connection.createStatement().execute(
@@ -92,7 +92,7 @@ public class BatchInserts {
         Assert.assertFalse(rs.next());
     }
 
-    @Test
+    @Test(enabled =  false)
     public void testSimpleInsert() throws Exception{
         connection.createStatement().execute("DROP TABLE IF EXISTS test.insert");
         connection.createStatement().execute(
@@ -133,61 +133,5 @@ public class BatchInserts {
         Assert.assertEquals(rs.getDouble("float64"), float64);
 
         Assert.assertFalse(rs.next());
-    }
-
-    @Test
-     public void batchInsertNulls() throws Exception {
-        connection.createStatement().execute("DROP TABLE IF EXISTS test.batch_insert_nulls");
-        connection.createStatement().execute(
-                        "CREATE TABLE test.batch_insert_nulls (" +
-                                        "date Date," +
-                                        "date_time Nullable(DateTime)," +
-                                        "string Nullable(String)," +
-                                        "int32 Nullable(Int32)," +
-                                        "float64 Nullable(Float64)" +
-                                        ") ENGINE = MergeTree(date, (date), 8192)"
-                        );
-
-        PreparedStatement statement = connection.prepareStatement(
-                "INSERT INTO test.batch_insert_nulls (date, date_time, string, int32, float64) VALUES (?, ?, ?, ?, ?)"
-                );
-
-        Date date = new Date(602110800000L); //1989-01-30
-        statement.setDate(1, date);
-        statement.setObject(2, null, Types.TIMESTAMP);
-        statement.setObject(3, null, Types.VARCHAR);
-        statement.setObject(4, null, Types.INTEGER);
-        statement.setObject(5, null, Types.DOUBLE);
-        statement.addBatch();
-        statement.executeBatch();
-
-        ResultSet rs = connection.createStatement().executeQuery("SELECT date, date_time, string, int32, float64 from test.batch_insert_nulls");
-        Assert.assertTrue(rs.next());
-
-        Assert.assertEquals(rs.getDate("date"), date);
-        Assert.assertNull(rs.getTimestamp("date_time"));
-        Assert.assertNull(rs.getString("string"));
-        Assert.assertEquals(rs.getInt("int32"), 0);
-        Assert.assertNull(rs.getObject("int32"));
-        Assert.assertEquals(rs.getDouble("float64"), 0.0);
-        Assert.assertNull(rs.getObject("float64"));
-
-        Assert.assertFalse(rs.next());
-        connection.createStatement().execute("DROP TABLE test.batch_insert_nulls");
-    }
-
-    @Test
-    public void testBatchValuesColumn() throws SQLException {
-        connection.createStatement().execute("DROP TABLE IF EXISTS test.batch_single_test");
-        connection.createStatement().execute(
-                "CREATE TABLE test.batch_single_test(date Date, values String) ENGINE = StripeLog"
-        );
-
-        PreparedStatement st = connection.prepareStatement("INSERT INTO test.batch_single_test (date, values) VALUES (?, ?)");
-        st.setDate(1, new Date(System.currentTimeMillis()));
-        st.setString(2, "test");
-
-        st.addBatch();
-        st.executeBatch();
     }
 }

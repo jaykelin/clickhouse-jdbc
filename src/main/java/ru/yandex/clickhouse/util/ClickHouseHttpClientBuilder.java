@@ -3,42 +3,36 @@ package ru.yandex.clickhouse.util;
 import org.apache.http.HeaderElement;
 import org.apache.http.HeaderElementIterator;
 import org.apache.http.HttpResponse;
-import org.apache.http.client.config.RequestConfig;
+import org.apache.http.HttpVersion;
+import org.apache.http.client.HttpClient;
+import org.apache.http.conn.ConnectionKeepAliveStrategy;
+
+/*import org.apache.http.client.config.RequestConfig;
 import org.apache.http.config.ConnectionConfig;
 import org.apache.http.config.RegistryBuilder;
-import org.apache.http.conn.ConnectionKeepAliveStrategy;
 import org.apache.http.conn.socket.ConnectionSocketFactory;
 import org.apache.http.conn.socket.PlainConnectionSocketFactory;
 import org.apache.http.conn.ssl.SSLConnectionSocketFactory;
 import org.apache.http.impl.client.CloseableHttpClient;
 import org.apache.http.impl.client.HttpClientBuilder;
-import org.apache.http.impl.conn.PoolingHttpClientConnectionManager;
+import org.apache.http.impl.conn.PoolingHttpClientConnectionManager;*/
+
+import org.apache.http.conn.scheme.PlainSocketFactory;
+import org.apache.http.conn.scheme.Scheme;
+import org.apache.http.conn.scheme.SchemeRegistry;
+import org.apache.http.conn.ssl.SSLSocketFactory;
+import org.apache.http.impl.client.DefaultHttpClient;
+import org.apache.http.impl.conn.PoolingClientConnectionManager;
 import org.apache.http.message.BasicHeaderElementIterator;
+import org.apache.http.params.BasicHttpParams;
+import org.apache.http.params.CoreConnectionPNames;
+import org.apache.http.params.HttpParams;
+import org.apache.http.params.HttpProtocolParams;
 import org.apache.http.protocol.HTTP;
 import org.apache.http.protocol.HttpContext;
 import ru.yandex.clickhouse.settings.ClickHouseProperties;
-import ru.yandex.clickhouse.util.ssl.NonValidatingTrustManager;
-
-import java.io.FileInputStream;
-import java.io.FileNotFoundException;
-import java.io.IOException;
-import java.io.InputStream;
 import java.net.HttpURLConnection;
-import java.security.KeyManagementException;
-import java.security.KeyStore;
-import java.security.KeyStoreException;
-import java.security.NoSuchAlgorithmException;
-import java.security.SecureRandom;
-import java.security.cert.Certificate;
-import java.security.cert.CertificateException;
-import java.security.cert.CertificateFactory;
-import java.util.Iterator;
 import java.util.concurrent.TimeUnit;
-import javax.net.ssl.KeyManager;
-import javax.net.ssl.SSLContext;
-import javax.net.ssl.TrustManager;
-import javax.net.ssl.TrustManagerFactory;
-
 
 
 public class ClickHouseHttpClientBuilder {
@@ -49,52 +43,72 @@ public class ClickHouseHttpClientBuilder {
         this.properties = properties;
     }
 
-    public CloseableHttpClient buildClient() throws Exception {
-        return HttpClientBuilder.create()
-                .setConnectionManager(getConnectionManager())
-                .setKeepAliveStrategy(createKeepAliveStrategy())
-                .setDefaultConnectionConfig(getConnectionConfig())
-                .setDefaultRequestConfig(getRequestConfig())
-                .disableContentCompression() // gzip здесь ни к чему. Используется lz4 при compress=1
-                .build();
+//    public CloseableHttpClient buildClient() {
+//        return HttpClientBuilder.create()
+//                .setConnectionManager(getConnectionManager())
+//                .setKeepAliveStrategy(createKeepAliveStrategy())
+//                .setDefaultConnectionConfig(getConnectionConfig())
+//                .setDefaultRequestConfig(getRequestConfig())
+//                .disableContentCompression() // gzip здесь ни к чему. Используется lz4 при compress=1
+//                .build();
+//    }
+
+    // 请求超时（s）
+    private final int REQUEST_TIMEOUT = 10*1000;
+    // 等待数据超时时间(S)
+    private final int SO_TIMEOUT = 10*1000;
+
+    public HttpClient buildClient(){
+        HttpParams params = new BasicHttpParams();
+        HttpProtocolParams.setVersion(params, HttpVersion.HTTP_1_1);
+        HttpProtocolParams.setUserAgent(params, "HttpComponents/1.1");
+        HttpProtocolParams.setUseExpectContinue(params, true);
+
+        params.setParameter(CoreConnectionPNames.CONNECTION_TIMEOUT, properties.getConnectionTimeout());
+        params.setParameter(CoreConnectionPNames.SO_TIMEOUT, properties.getSocketTimeout());
+        params.setParameter(CoreConnectionPNames.SOCKET_BUFFER_SIZE, properties.getBufferSize());
+
+
+        SchemeRegistry schreg = new SchemeRegistry();
+        schreg.register(new Scheme("http", 80, PlainSocketFactory.getSocketFactory()));
+        schreg.register(new Scheme("https", 443, SSLSocketFactory.getSocketFactory()));
+
+        PoolingClientConnectionManager pccm = new PoolingClientConnectionManager(schreg);
+        pccm.setDefaultMaxPerRoute(properties.getDefaultMaxPerRoute());
+//        pccm.setMaxPerRoute(properties.getDefaultMaxPerRoute());
+        pccm.setMaxTotal(properties.getMaxTotal());
+
+        DefaultHttpClient client =  new DefaultHttpClient(pccm, params);
+        client.setKeepAliveStrategy(createKeepAliveStrategy());
+        return client;
+
     }
 
-    private PoolingHttpClientConnectionManager getConnectionManager()
-        throws CertificateException, NoSuchAlgorithmException, KeyStoreException, KeyManagementException, IOException {
-        RegistryBuilder<ConnectionSocketFactory> registry = RegistryBuilder.<ConnectionSocketFactory>create()
-          .register("http", PlainConnectionSocketFactory.getSocketFactory());
-
-        if (properties.getSsl()) {
-            registry.register("https", new SSLConnectionSocketFactory(getSSLContext()));
-        }
-
-        //noinspection resource
-        PoolingHttpClientConnectionManager connectionManager = new PoolingHttpClientConnectionManager(
-            registry.build(),
-            null,
-            null,
-            new IpVersionPriorityResolver(),
-            properties.getTimeToLiveMillis(),
-            TimeUnit.MILLISECONDS
-        );
-
-        connectionManager.setDefaultMaxPerRoute(properties.getDefaultMaxPerRoute());
-        connectionManager.setMaxTotal(properties.getMaxTotal());
-        return connectionManager;
-    }
-
-    private ConnectionConfig getConnectionConfig() {
-        return ConnectionConfig.custom()
-                .setBufferSize(properties.getApacheBufferSize())
-                .build();
-    }
-
-    private RequestConfig getRequestConfig() {
-        return RequestConfig.custom()
-                .setSocketTimeout(properties.getSocketTimeout())
-                .setConnectTimeout(properties.getConnectionTimeout())
-                .build();
-    }
+//    private PoolingHttpClientConnectionManager getConnectionManager() {
+//        //noinspection resource
+//        PoolingHttpClientConnectionManager connectionManager = new PoolingHttpClientConnectionManager(
+//                RegistryBuilder.<ConnectionSocketFactory>create()
+//                        .register("http", PlainConnectionSocketFactory.getSocketFactory())
+//                        .register("https", SSLConnectionSocketFactory.getSocketFactory())
+//                        .build(),
+//                null, null, new IpVersionPriorityResolver(), properties.getTimeToLiveMillis(), TimeUnit.MILLISECONDS);
+//        connectionManager.setDefaultMaxPerRoute(properties.getDefaultMaxPerRoute());
+//        connectionManager.setMaxTotal(properties.getMaxTotal());
+//        return connectionManager;
+//    }
+//
+//    private ConnectionConfig getConnectionConfig() {
+//        return ConnectionConfig.custom()
+//                .setBufferSize(properties.getApacheBufferSize())
+//                .build();
+//    }
+//
+//    private RequestConfig getRequestConfig() {
+//        return RequestConfig.custom()
+//                .setSocketTimeout(properties.getSocketTimeout())
+//                .setConnectTimeout(properties.getConnectionTimeout())
+//                .build();
+//    }
 
     private ConnectionKeepAliveStrategy createKeepAliveStrategy() {
         return new ConnectionKeepAliveStrategy() {
@@ -118,57 +132,5 @@ public class ClickHouseHttpClientBuilder {
             }
         };
     }
-
-  private SSLContext getSSLContext()
-      throws CertificateException, NoSuchAlgorithmException, KeyStoreException, IOException, KeyManagementException {
-      TrustManager[] tms;
-      if(properties.getSslMode().equals("none")) {
-          tms = new TrustManager[]{new NonValidatingTrustManager()};
-      } else if (properties.getSslMode().equals("strict")){
-        TrustManagerFactory tmf = TrustManagerFactory
-            .getInstance(TrustManagerFactory.getDefaultAlgorithm());
-
-        tmf.init(getKeyStore());
-        tms = tmf.getTrustManagers();
-      } else {
-          throw new IllegalArgumentException("unknown ssl mode '"+ properties.getSslMode() +"'");
-      }
-
-      SSLContext ctx = SSLContext.getInstance("TLS");
-      ctx.init(new KeyManager[]{}, tms, new SecureRandom());
-
-      return ctx;
-  }
-
-  private KeyStore getKeyStore()
-      throws NoSuchAlgorithmException, IOException, CertificateException, KeyStoreException {
-      KeyStore ks;
-      try {
-          ks = KeyStore.getInstance("jks");
-          ks.load(null, null); // needed to initialize the key store
-      } catch (KeyStoreException e) {
-          throw new NoSuchAlgorithmException("jks KeyStore not available");
-      }
-
-      InputStream caInputStream;
-      try {
-        caInputStream = new FileInputStream(properties.getSslRootCertificate());
-      } catch (FileNotFoundException ex) {
-          ClassLoader cl = Thread.currentThread().getContextClassLoader();
-          caInputStream = cl.getResourceAsStream(properties.getSslRootCertificate());
-          if(caInputStream == null) {
-              throw new IOException(
-                  "Could not open SSL/TLS root certificate file '" + properties
-                      .getSslRootCertificate() + "'", ex);
-          }
-      }
-      CertificateFactory cf = CertificateFactory.getInstance("X.509");
-      Iterator<? extends Certificate> caIt = cf.generateCertificates(caInputStream).iterator();
-      for (int i = 0; caIt.hasNext(); i++) {
-        ks.setCertificateEntry("cert" + i, caIt.next());
-      }
-
-      return ks;
-  }
 
 }

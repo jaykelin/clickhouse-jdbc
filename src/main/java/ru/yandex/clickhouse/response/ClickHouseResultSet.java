@@ -1,29 +1,22 @@
 package ru.yandex.clickhouse.response;
 
-import ru.yandex.clickhouse.ClickHouseArray;
-import ru.yandex.clickhouse.ClickHouseStatement;
-import ru.yandex.clickhouse.except.ClickHouseExceptionSpecifier;
-import ru.yandex.clickhouse.settings.ClickHouseProperties;
-import ru.yandex.clickhouse.util.TypeUtils;
-
 import java.io.IOException;
 import java.io.InputStream;
 import java.math.BigDecimal;
-import java.math.BigInteger;
-import java.math.RoundingMode;
 import java.sql.*;
 import java.text.ParseException;
 import java.text.SimpleDateFormat;
 import java.util.Arrays;
 import java.util.HashMap;
 import java.util.Map;
-import java.util.TimeZone;
 
-import static ru.yandex.clickhouse.response.ByteFragmentUtils.parseArray;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 
 public class ClickHouseResultSet extends AbstractResultSet {
-    private final static long[] EMPTY_LONG_ARRAY = new long[]{};
+
+    private static final Logger log = LoggerFactory.getLogger(ClickHouseResultSet.class);
 
     private final SimpleDateFormat sdf = new SimpleDateFormat("yyyy-MM-dd HH:mm:ss"); //
     private final SimpleDateFormat dateFormat = new SimpleDateFormat("yyyy-MM-dd"); //
@@ -47,31 +40,16 @@ public class ClickHouseResultSet extends AbstractResultSet {
     // next line
     private ByteFragment nextLine;
 
-    // total lines
-    private ByteFragment totalLine;
-
     // row counter
     private int rowNumber;
 
     // statement result set belongs to
-    private ClickHouseStatement statement;
+    private Statement statement;
 
-    private final ClickHouseProperties properties;
-
-    private boolean usesWithTotals;
-
-    // NOTE this can't be used for `isLast` impl because
-    // it does not do prefetch. It is effectively a witness
-    // to the fact that rs.next() returned false.
-    private boolean lastReached = false;
-
-    public ClickHouseResultSet(InputStream is, int bufferSize, String db, String table, boolean usesWithTotals, ClickHouseStatement statement, TimeZone timezone, ClickHouseProperties properties) throws IOException {
+    public ClickHouseResultSet(InputStream is, int bufferSize, String db, String table, Statement statement) throws IOException {
         this.db = db;
         this.table = table;
         this.statement = statement;
-        this.properties = properties;
-        this.usesWithTotals = usesWithTotals;
-        initTimeZone(timezone);
         bis = new StreamSplitter(is, (byte) 0x0A, bufferSize);  ///   \n
         ByteFragment headerFragment = bis.next();
         if (headerFragment == null) {
@@ -95,13 +73,6 @@ public class ClickHouseResultSet extends AbstractResultSet {
         }
     }
 
-    private void initTimeZone(TimeZone timeZone) {
-        sdf.setTimeZone(timeZone);
-        if (properties.isUseServerTimeZoneForDates()) {
-            dateFormat.setTimeZone(timeZone);
-        }
-    }
-
     private static String[] toStringArray(ByteFragment headerFragment) {
         ByteFragment[] split = headerFragment.split((byte) 0x09);
         String[] c = new String[split.length];
@@ -113,19 +84,12 @@ public class ClickHouseResultSet extends AbstractResultSet {
     }
 
     public boolean hasNext() throws SQLException {
-        if (nextLine == null && !lastReached) {
+        if (nextLine == null) {
             try {
                 nextLine = bis.next();
-
-                if (nextLine == null || (maxRows != 0 && rowNumber >= maxRows) || (usesWithTotals && nextLine.length() == 0)) {
-                    if (usesWithTotals) {
-                        if (onTheSeparatorRow()) {
-                            totalLine = bis.next();
-                            endOfStream();
-                        } // otherwise do not close the stream, it is single column or invalid result set case
-                    } else {
-                        endOfStream();
-                    }
+                if (nextLine == null || (maxRows != 0 && rowNumber >= maxRows)) {
+                    bis.close();
+                    nextLine = null;
                 }
             } catch (IOException e) {
                 throw new SQLException(e);
@@ -133,37 +97,14 @@ public class ClickHouseResultSet extends AbstractResultSet {
         }
         return nextLine != null;
     }
-
-    private void endOfStream() throws IOException {
-        bis.close();
-        lastReached = true;
-        nextLine = null;
-    }
-
     @Override
     public boolean next() throws SQLException {
         if (hasNext()) {
             values = nextLine.split((byte) 0x09);
-            checkValues(columns, values, nextLine);
             nextLine = null;
             rowNumber += 1;
             return true;
         } else return false;
-    }
-
-    private boolean onTheSeparatorRow() throws IOException {
-        // test bis vs "\n???\nEOF" pattern if not then rest to current position
-        bis.mark();
-        boolean onSeparatorRow = bis.next() !=null && bis.next() == null;
-        bis.reset();
-
-        return onSeparatorRow;
-    }
-
-    private void checkValues(String[] columns, ByteFragment[] values, ByteFragment fragment) throws SQLException {
-        if (columns.length != values.length) {
-            throw ClickHouseExceptionSpecifier.specify(fragment.asString());
-        }
     }
 
     @Override
@@ -173,15 +114,6 @@ public class ClickHouseResultSet extends AbstractResultSet {
         } catch (IOException e) {
             throw new SQLException(e);
         }
-    }
-
-    public void getTotals() throws SQLException {
-        if (!usesWithTotals)
-            throw new IllegalStateException("Cannot get totals when totals are not being used.");
-
-        nextLine = totalLine;
-
-        this.next();
     }
 
     /////////////////////////////////////////////////////////
@@ -238,14 +170,13 @@ public class ClickHouseResultSet extends AbstractResultSet {
         return getBytes(asColNum(column));
     }
 
-    public Long getTimestampAsLong(String column) {
+    public long getTimestampAsLong(String column) {
         return getTimestampAsLong(asColNum(column));
     }
 
     @Override
     public Timestamp getTimestamp(String column) throws SQLException {
-        Long value = getTimestampAsLong(column);
-        return value == null ? null : new Timestamp(value);
+        return new Timestamp(getTimestampAsLong(column));
     }
 
     @Override
@@ -263,46 +194,6 @@ public class ClickHouseResultSet extends AbstractResultSet {
         return getLongArray(asColNum(column));
     }
 
-    @Override
-    public Array getArray(int columnIndex) throws SQLException {
-        if (TypeUtils.toSqlType(types[columnIndex - 1]) != Types.ARRAY) {
-            throw new SQLException("Not an array");
-        }
-
-        String elementTypeName = TypeUtils.getArrayElementTypeName(types[columnIndex - 1]);
-        int elementType = TypeUtils.toSqlType(elementTypeName);
-        boolean isUnsigned = TypeUtils.isUnsigned(elementTypeName);
-
-        final Object array;
-        if (elementType == Types.DATE) {
-            array = parseArray(
-                    getValue(columnIndex),
-                    TypeUtils.toClass(elementType, isUnsigned),
-                    properties.isUseObjectsInArrays(),
-                    dateFormat
-            );
-        } else if (elementType == Types.TIMESTAMP) {
-            array = parseArray(
-                    getValue(columnIndex),
-                    TypeUtils.toClass(elementType, isUnsigned),
-                    properties.isUseObjectsInArrays(),
-                    sdf
-            );
-        } else {
-            array = parseArray(
-                    getValue(columnIndex),
-                    TypeUtils.toClass(elementType, isUnsigned),
-                    properties.isUseObjectsInArrays()
-            );
-        }
-
-        return new ClickHouseArray(elementType, isUnsigned, array);
-    }
-
-    @Override
-    public Array getArray(String column) throws SQLException {
-        return getArray(asColNum(column));
-    }
 
     @Override
     public double getDouble(String columnLabel) throws SQLException {
@@ -357,14 +248,14 @@ public class ClickHouseResultSet extends AbstractResultSet {
         return toBytes(getValue(colNum));
     }
 
-    public Long getTimestampAsLong(int colNum) {
+    public long getTimestampAsLong(int colNum) {
         return toTimestamp(getValue(colNum));
     }
 
     @Override
     public Timestamp getTimestamp(int columnIndex) throws SQLException {
-        Long value = getTimestampAsLong(columnIndex);
-        return value == null ? null : new Timestamp(value);
+        if (getValue(columnIndex).isNull()) return null;
+        return new Timestamp(getTimestampAsLong(columnIndex));
     }
 
     @Override
@@ -406,12 +297,12 @@ public class ClickHouseResultSet extends AbstractResultSet {
     public Statement getStatement() {
         return statement;
     }
-
+    
     @Override
     public Date getDate(int columnIndex) throws SQLException {
         // date is passed as a string from clickhouse
         ByteFragment value = getValue(columnIndex);
-        if (value.isNull() || value.asString().equals("0000-00-00")) return null;
+        if (value.isNull()) return null;
         try {
             return new Date(dateFormat.parse(value.asString()).getTime());
         } catch (ParseException e) {
@@ -427,31 +318,15 @@ public class ClickHouseResultSet extends AbstractResultSet {
     @Override
     public Object getObject(int columnIndex) throws SQLException {
         try {
-            if (getValue(columnIndex).isNull()) {
-                return null;
-            }
-
-            String typeName = types[columnIndex - 1];
-            int type = TypeUtils.toSqlType(typeName);
+            int type = toSqlType(types[columnIndex - 1]);
             switch (type) {
-                case Types.BIGINT:
-                    if (TypeUtils.isUnsigned(typeName)){
-                        String stringVal = getString(columnIndex);
-                        return new BigInteger(stringVal);
-                    }
-                    return getLong(columnIndex);
-                case Types.INTEGER:
-                    if (TypeUtils.isUnsigned(typeName)){
-                        return getLong(columnIndex);
-                    }
-                    return getInt(columnIndex);
+                case Types.BIGINT:      return getLong(columnIndex);
+                case Types.INTEGER:     return getInt(columnIndex);
                 case Types.VARCHAR:     return getString(columnIndex);
                 case Types.FLOAT:       return getFloat(columnIndex);
-                case Types.DOUBLE:      return getDouble(columnIndex);
                 case Types.DATE:        return getDate(columnIndex);
                 case Types.TIMESTAMP:   return getTimestamp(columnIndex);
                 case Types.BLOB:        return getString(columnIndex);
-                case Types.ARRAY:       return getArray(columnIndex).getArray();
             }
             return getString(columnIndex);
         } catch (Exception e) {
@@ -484,12 +359,11 @@ public class ClickHouseResultSet extends AbstractResultSet {
         return value.asString(true);
     }
 
-    static long[] toLongArray(ByteFragment value) {
+    private static long[] toLongArray(ByteFragment value) {
         if (value.isNull()) return null;
         if (value.charAt(0) != '[' || value.charAt(value.length()-1) != ']') {
             throw new IllegalArgumentException("not an array: "+value);
         }
-        if (value.length() == 2) return EMPTY_LONG_ARRAY;
         ByteFragment trim = value.subseq(1, value.length() - 2);
         ByteFragment[] values = trim.split((byte) ',');
         long[] result = new long[values.length];
@@ -499,12 +373,12 @@ public class ClickHouseResultSet extends AbstractResultSet {
         return result;
     }
 
-    private Long toTimestamp(ByteFragment value) {
-        if (value.isNull() || value.asString().equals("0000-00-00 00:00:00")) return null;
+    private long toTimestamp(ByteFragment value) {
+        if (value.isNull()) return 0;
         try {
             return sdf.parse(value.asString()).getTime();
         } catch (ParseException e) {
-            throw new RuntimeException(e);
+            return 0;
         }
     }
 
@@ -548,6 +422,30 @@ public class ClickHouseResultSet extends AbstractResultSet {
         return values[colNum - 1];
     }
 
+    public static int toSqlType(String type) {
+
+        if (type.startsWith("Int") || type.startsWith("UInt")) {
+            if (type.endsWith("64")) return Types.BIGINT;
+            else return Types.INTEGER;
+        }
+        if ("String".equals(type)) return Types.VARCHAR;
+        if (type.startsWith("Float")) return Types.FLOAT;
+        if ("Date".equals(type)) return Types.DATE;
+        if ("DateTime".equals(type)) return Types.TIMESTAMP;
+        if ("FixedString".equals(type)) return Types.BLOB;
+
+        // don't know what to return actually
+        return Types.VARCHAR;
+
+    }
+
+    public static int[] supportedTypes() {
+        return new int[] {
+                Types.BIGINT, Types.INTEGER, Types.VARCHAR, Types.FLOAT,
+                Types.DATE, Types.TIMESTAMP, Types.BLOB
+        };
+    }
+
     public <T> T getObject(int columnIndex, Class<T> type) throws SQLException {
         throw new SQLException("Not implemented");
     }
@@ -587,7 +485,7 @@ public class ClickHouseResultSet extends AbstractResultSet {
             return null;
         }
         BigDecimal result = new BigDecimal(string);
-        return result.setScale(scale, RoundingMode.HALF_UP);
+        return result.setScale(scale, BigDecimal.ROUND_HALF_UP);
     }
 
     @Override
@@ -600,24 +498,4 @@ public class ClickHouseResultSet extends AbstractResultSet {
         // ignore perfomance hint
     }
 
-
-    @Override
-    public String toString() {
-        return "ClickHouseResultSet{" +
-            "sdf=" + sdf +
-            ", dateFormat=" + dateFormat +
-            ", bis=" + bis +
-            ", db='" + db + '\'' +
-            ", table='" + table + '\'' +
-            ", col=" + col +
-            ", columns=" + Arrays.toString(columns) +
-            ", types=" + Arrays.toString(types) +
-            ", maxRows=" + maxRows +
-            ", values=" + Arrays.toString(values) +
-            ", lastReadColumn=" + lastReadColumn +
-            ", nextLine=" + nextLine +
-            ", rowNumber=" + rowNumber +
-            ", statement=" + statement +
-            '}';
-    }
 }

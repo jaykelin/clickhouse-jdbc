@@ -46,7 +46,7 @@ public class ClickHouseArrayUtil {
     public static String toString(int[] values) {
         ArrayBuilder builder = new ArrayBuilder(false);
         for (int value : values) {
-            builder.append(value);
+            builder.append(Integer.toString(value));
         }
         return builder.build();
     }
@@ -54,7 +54,7 @@ public class ClickHouseArrayUtil {
     public static String toString(long[] values) {
         ArrayBuilder builder = new ArrayBuilder(false);
         for (long value : values) {
-            builder.append(value);
+            builder.append(Long.toString(value));
         }
         return builder.build();
     }
@@ -62,7 +62,7 @@ public class ClickHouseArrayUtil {
     public static String toString(float[] values) {
         ArrayBuilder builder = new ArrayBuilder(false);
         for (float value : values) {
-            builder.append(value);
+            builder.append(Float.toString(value));
         }
         return builder.build();
     }
@@ -70,7 +70,7 @@ public class ClickHouseArrayUtil {
     public static String toString(double[] values) {
         ArrayBuilder builder = new ArrayBuilder(false);
         for (double value : values) {
-            builder.append(value);
+            builder.append(Double.toString(value));
         }
         return builder.build();
     }
@@ -78,7 +78,7 @@ public class ClickHouseArrayUtil {
     public static String toString(byte[] values) {
         ArrayBuilder builder = new ArrayBuilder(false);
         for (byte value : values) {
-            builder.append(value);
+            builder.append(Byte.toString(value));
         }
         return builder.build();
     }
@@ -86,7 +86,7 @@ public class ClickHouseArrayUtil {
     public static String toString(short[] values) {
         ArrayBuilder builder = new ArrayBuilder(false);
         for (short value : values) {
-            builder.append(value);
+            builder.append(Short.toString(value));
         }
         return builder.build();
     }
@@ -95,29 +95,16 @@ public class ClickHouseArrayUtil {
     public static String toString(char[] values) {
         ArrayBuilder builder = new ArrayBuilder(true);
         for (char value : values) {
-            builder.append(value);
+            builder.append(Character.toString(value));
         }
         return builder.build();
     }
 
 
     public static String toString(Object[] values) {
-        if (values.length > 0 && values[0] != null && (values[0].getClass().isArray() || values[0] instanceof Collection)) {
-            // quote is false to avoid escaping inner '['
-            ArrayBuilder builder = new ArrayBuilder(false);
-            for (Object value : values) {
-                if (value instanceof Collection) {
-                    Object[] objects = ((Collection) value).toArray();
-                    builder.append(toString(objects));
-                } else {
-                    builder.append(arrayToString(value));
-                }
-            }
-            return builder.build();
-        }
         ArrayBuilder builder = new ArrayBuilder(needQuote(values));
         for (Object value : values) {
-            builder.append(value);
+            builder.append(value.toString());
         }
         return builder.build();
     }
@@ -127,14 +114,7 @@ public class ClickHouseArrayUtil {
     }
 
     private static boolean needQuote(Object[] objects) {
-        Object o = null;
-            for (Object u : objects) {
-                if (u != null) {
-                    o = u;
-                    break;
-                }
-            }
-        return objects.length == 0 || !(o instanceof Number);
+        return !Number.class.isAssignableFrom(objects.getClass().getComponentType());
     }
 
     private static class ArrayBuilder {
@@ -148,27 +128,22 @@ public class ClickHouseArrayUtil {
             builder.append('[');
         }
 
-        private ArrayBuilder append(Object value) {
-            String serializedValue = null;
-            boolean nullValue = true;
-            if (value != null) {
-                serializedValue = value.toString();
-                nullValue = false;
+        private ArrayBuilder append(String value) {
+            if (quote) {
+                value = ClickHouseUtil.escape(value);
             }
-            if (quote || nullValue) {
-                serializedValue = ClickHouseUtil.escape(serializedValue);
-            }
+
             if (built) {
                 throw new IllegalStateException("Already built");
             }
             if (size > 0) {
                 builder.append(',');
             }
-            if (quote && !nullValue) {
+            if (quote) {
                 builder.append('\'');
             }
-            builder.append(serializedValue);
-            if (quote  && !nullValue) {
+            builder.append(value);
+            if (quote) {
                 builder.append('\'');
             }
             size++;
